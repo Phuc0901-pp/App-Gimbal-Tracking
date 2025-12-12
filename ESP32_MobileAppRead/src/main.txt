@@ -1,0 +1,205 @@
+#include <Arduino.h>
+#include "Bluetooth.h" 
+#include <SimpleFOC.h>
+#include <Wire.h>
+
+// --- 1. CẤU HÌNH PIN VÀ ĐỘNG CƠ (GIỮ NGUYÊN CẤU HÌNH CỦA BẠN) ---
+constexpr uint8_t PIN_UH_1 = 25, PIN_VH_1 = 33, PIN_WH_1 = 32, PIN_EN_1 = 26;
+constexpr uint8_t PIN_UH_2 = 12, PIN_VH_2 = 14, PIN_WH_2 = 27, PIN_EN_2 = 13;
+constexpr uint8_t PIN_UH_3 = 0,  PIN_VH_3 = 2,  PIN_WH_3 = 15,  PIN_EN_3 = 4;
+
+constexpr uint8_t POLE_PAIRS = 11;
+constexpr uint8_t POLE_PAIRS_1 = 7;
+constexpr float SUPPLY_V = 12.0;
+
+// Khởi tạo Motor
+BLDCMotor       motor1(POLE_PAIRS_1);
+BLDCDriver3PWM  driver1(PIN_UH_1, PIN_VH_1, PIN_WH_1, PIN_EN_1);
+
+BLDCMotor       motor2(POLE_PAIRS);
+BLDCDriver3PWM  driver2(PIN_UH_2, PIN_VH_2, PIN_WH_2, PIN_EN_2);
+
+BLDCMotor       motor3(POLE_PAIRS);
+BLDCDriver3PWM  driver3(PIN_UH_3, PIN_VH_3, PIN_WH_3, PIN_EN_3);
+
+// --- 2. CLASS PID CONTROLLER (LÀM MƯỢT CHUYỂN ĐỘNG) ---
+class PIDController {
+  public:
+    float Kp; // Độ nhạy (Kéo về đích nhanh hay chậm)
+    float Ki; // Tích phân (Thường = 0 với OpenLoop)
+    float Kd; // Giảm chấn (QUAN TRỌNG ĐỂ CHỐNG VỌT LỐ)
+    
+    float current_val = 0.0f; 
+    float prev_error = 0.0f;
+    float integral = 0.0f;
+    unsigned long last_calc_time = 0;
+
+    PIDController(float p, float i, float d, float start_val) {
+      Kp = p; Ki = i; Kd = d;
+      current_val = start_val;
+      last_calc_time = millis();
+    }
+
+    // Hàm tính toán vị trí tiếp theo (chạy trong loop)
+    float compute(float target) {
+      unsigned long now = millis();
+      float dt = (now - last_calc_time) / 1000.0f; // dt tính bằng giây
+      
+      if (dt <= 0 || dt > 0.5) { 
+         last_calc_time = now;
+         return current_val;
+      }
+      last_calc_time = now;
+
+      // Tính sai số
+      float error = target - current_val;
+
+      // P - Tỷ lệ
+      float P = Kp * error;
+
+      // I - Tích phân (Có giới hạn để tránh cộng dồn quá mức)
+      integral += error * dt;
+      integral = constrain(integral, -5.0f, 5.0f);
+      float I = Ki * integral;
+
+      // D - Đạo hàm (Giảm chấn) -> Giúp triệt tiêu dao động
+      float D = Kd * (error - prev_error) / dt;
+      prev_error = error;
+
+      // Output là vận tốc thay đổi vị trí
+      float output = P + I + D;
+
+      // Cập nhật vị trí mượt mà
+      current_val += output * dt;
+
+      return current_val;
+    }
+};
+
+// --- 3. KHỞI TẠO PID & BIẾN TOÀN CỤC ---
+
+// Tuning (Tinh chỉnh) cho Gimbal:
+// Kp: 2.0 -> 4.0 (Đủ nhanh để bám theo)
+// Ki: 0.0 (Không cần thiết cho OpenLoop)
+// Kd: 0.1 -> 0.2 (Tăng lên nếu bị vọt lố/rung lắc)
+
+// Motor 2 (Tilt): Bắt đầu tại 90 độ (vị trí cân bằng)
+PIDController pidTilt(3.0f, 0.0f, 0.15f, 90.0f * DEG_TO_RAD); 
+
+// Motor 1 (Pan): Bắt đầu tại 0 độ
+PIDController pidPan(3.0f, 0.0f, 0.15f, 0.0f);
+
+float target_pan = 0.0f;           // Góc đích nhận từ Bluetooth
+float target_tilt = 90.0f * DEG_TO_RAD; // Góc đích nhận từ Bluetooth
+
+// --- 4. HÀM XỬ LÝ DỮ LIỆU ---
+
+String getValue(String data, String key) {
+  String keyPattern = "[" + key + "]:";
+  int start = data.indexOf(keyPattern);
+  if (start == -1) return "";
+  start += keyPattern.length();
+  int end = data.indexOf(";", start);
+  if (end == -1) end = data.indexOf("}}", start);
+  if (end == -1) return "";
+  return data.substring(start, end);
+}
+
+void onDataReceived(String data) {
+  data.trim();
+
+  // 1. Mất dấu -> Reset về cân bằng
+  if (data.indexOf("LOST") != -1) {
+     // Serial.println(">>> LOST! Reset Tilt ve 90.");
+     target_tilt = 90.0f * DEG_TO_RAD;
+     // Pan giữ nguyên hoặc về 0 tùy ý:
+     // target_pan = 0.0f; 
+     return;
+  }
+
+  // 2. Nhận dữ liệu Tracking
+  if (data.startsWith("{{") && data.endsWith("}}")) {
+      String s_ax = getValue(data, "ax");
+      String s_ay = getValue(data, "ay");
+
+      if(s_ax != "" && s_ay != "") {
+          float angle_x = s_ax.toFloat();
+          float angle_y = s_ay.toFloat();
+
+          // TÍNH TOÁN GÓC ĐÍCH (TARGET)
+          
+          // Trục Y (Tilt): 90 độ + góc lệch
+          float new_tilt_deg = 90.0f + angle_y;
+          // Giới hạn an toàn cơ khí (45 đến 135 độ)
+          new_tilt_deg = constrain(new_tilt_deg, 45.0f, 135.0f);
+          target_tilt = new_tilt_deg * DEG_TO_RAD;
+
+          // Trục X (Pan): Góc lệch
+          // Bạn có thể muốn Pan quay tự do hơn, nhưng hiện tại ta test bám góc lệch
+          target_pan = angle_x * DEG_TO_RAD;
+
+          // Debug nhanh (có thể comment lại để loop chạy nhanh hơn)
+          // Serial.printf("T: %.1f, %.1f\n", target_pan, target_tilt);
+      }
+  }
+}
+
+// --- 5. SETUP ---
+void setup() {
+  Serial.begin(115200);
+  Bluetooth::getInstance()->init("ESP32_Tracker", onDataReceived);
+  Wire.begin(22, 21);
+
+  // --- CẤU HÌNH MOTOR 1 (PAN) ---
+  driver1.voltage_power_supply = SUPPLY_V;
+  driver1.pwm_frequency = 20000;
+  driver1.init();
+  motor1.linkDriver(&driver1);
+  motor1.controller = MotionControlType::angle_openloop;
+  motor1.voltage_limit = 9.0f; // Cấu hình của bạn
+  motor1.velocity_limit = 20.0f; // [LƯU Ý] Tăng velocity_limit lên để PID có thể điều khiển nhanh hơn
+  motor1.current_limit = 1;
+  motor1.init();
+
+  // --- CẤU HÌNH MOTOR 2 (TILT) ---
+  driver2.voltage_power_supply = SUPPLY_V;
+  driver2.pwm_frequency = 25000;
+  driver2.init();
+  motor2.linkDriver(&driver2);
+  motor2.controller = MotionControlType::angle_openloop;
+  motor2.voltage_limit = 9.0f; 
+  motor2.velocity_limit = 20.0f; // Tăng lên, tốc độ thực tế sẽ do PID quyết định
+  motor2.current_limit = 1;
+  motor2.init();
+
+  // --- CẤU HÌNH MOTOR 3 (ROLL) ---
+  driver3.voltage_power_supply = SUPPLY_V;
+  driver3.pwm_frequency = 20000;
+  driver3.init();
+  motor3.linkDriver(&driver3);
+  motor3.controller = MotionControlType::angle_openloop;
+  motor3.voltage_limit = 5.0f;
+  motor3.velocity_limit = 5.0f;
+  motor3.current_limit = 1;
+  motor3.init();
+
+  Serial.println("System Ready - PID Active");
+}
+
+// --- 6. LOOP ---
+void loop() {
+  // 1. Chạy FOC liên tục
+  motor1.loopFOC();
+  motor2.loopFOC();
+  motor3.loopFOC();
+
+  // 2. Tính toán PID (Nội suy vị trí mượt mà)
+  // PID sẽ nhận Target (nhảy cóc) và trả về Smooth (trôi từ từ)
+  float smooth_pan  = pidPan.compute(target_pan);
+  float smooth_tilt = pidTilt.compute(target_tilt);
+
+  // 3. Điều khiển động cơ theo giá trị mượt
+  motor1.move(smooth_pan);
+  motor2.move(smooth_tilt);
+  motor3.move(90.0f * DEG_TO_RAD); // Roll giữ cố định
+}
