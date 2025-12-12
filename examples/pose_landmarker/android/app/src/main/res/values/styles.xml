@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- ===== App theme gốc ===== -->
+    <style name="AppTheme" parent="Theme.MaterialComponents.Light.NoActionBar">
+        <item name="colorPrimary">@color/mp_color_primary</item>
+        <item name="colorPrimaryVariant">@color/mp_color_primary_variant</item>
+        <item name="colorPrimaryDark">@color/mp_color_primary_dark</item>
+
+        <item name="colorSecondary">@color/mp_color_secondary</item>
+        <item name="colorSecondaryVariant">@color/mp_color_secondary_variant</item>
+        <item name="colorError">@color/mp_color_error</item>
+
+        <item name="android:statusBarColor">?attr/colorPrimary</item>
+    </style>
+
+    <style name="BottomSheetSpinnerItemStyle" parent="Widget.AppCompat.Light.DropDownItem.Spinner">
+        <item name="android:textSize">@dimen/bottom_sheet_text_size</item>
+    </style>
+
+    <style name="AppThemeProgressStyle">
+        <item name="colorAccent">@color/mp_color_primary_variant</item>
+    </style>
+
+    <!-- ===== ShapeAppearance: thêm đủ 3 alias để layout nào cũng link được ===== -->
+    <!-- Base -->
+    <style name="Shape" parent="ShapeAppearance.MaterialComponents.MediumComponent">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">16dp</item>
+    </style>
+
+    <!-- Rounded mặc định -->
+    <style name="Shape.Rounded" parent="ShapeAppearance.MaterialComponents.MediumComponent">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">18dp</item>
+    </style>
+
+    <!-- Bản .18 (để tương thích nơi dùng shapeAppearanceOverlay="@style/Shape.Rounded.18") -->
+    <style name="Shape.Rounded.18" parent="ShapeAppearance.MaterialComponents.MediumComponent">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">18dp</item>
+    </style>
+
+    <!-- ===== FAB styles (Material Components 1.7.0) ===== -->
+    <style name="Widget.IconFab" parent="Widget.MaterialComponents.FloatingActionButton">
+        <item name="android:layout_width">56dp</item>
+        <item name="android:layout_height">56dp</item>
+        <item name="backgroundTint">#14FFFFFF</item>
+        <item name="elevation">4dp</item>
+        <item name="hoveredFocusedTranslationZ">0dp</item>
+        <item name="pressedTranslationZ">0dp</item>
+        <item name="shapeAppearance">@style/Shape.Rounded</item>
+    </style>
+
+    <style name="Widget.IconFab.Lg" parent="Widget.IconFab">
+        <item name="android:layout_width">64dp</item>
+        <item name="android:layout_height">64dp</item>
+        <item name="backgroundTint">#2A10B981</item>
+    </style>
+
+</resources>

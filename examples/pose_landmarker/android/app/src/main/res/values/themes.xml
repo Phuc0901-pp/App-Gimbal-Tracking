@@ -1,0 +1,8 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.RaitekAI" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">#0EA5A5</item>
+        <item name="android:statusBarColor" tools:targetApi="l">#000000</item>
+        <item name="android:navigationBarColor" tools:targetApi="l">#000000</item>
+        <!-- FAB/Material mặc định dùng ColorScheme của theme này -->
+    </style>
+</resources>
