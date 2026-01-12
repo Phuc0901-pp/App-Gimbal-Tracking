@@ -12,17 +12,25 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.PointF
 import android.graphics.RectF
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.util.Size
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.*
+import androidx.camera.video.*
+import androidx.camera.video.VideoCapture
+import androidx.core.util.Consumer
+import androidx.core.content.PermissionChecker
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -42,6 +50,11 @@ class CameraFragment : Fragment(), YoloHelper.DetectorListener {
 
     private lateinit var yoloHelper: YoloHelper
     private var cameraFacing = CameraSelector.LENS_FACING_BACK
+    private var imageCapture: ImageCapture? = null // Thêm ImageCapture
+    private var videoCapture: VideoCapture<Recorder>? = null // Thêm VideoCapture
+    private var recording: Recording? = null
+    private var cameraControl: CameraControl? = null
+    private var cameraInfo: CameraInfo? = null
     private var backgroundExecutor: ExecutorService? = null
 
     // Bluetooth
@@ -50,21 +63,81 @@ class CameraFragment : Fragment(), YoloHelper.DetectorListener {
     private var scanDialog: BottomSheetDialog? = null
     private val foundDevices = ArrayList<BluetoothDevice>()
     private var deviceAdapter: DeviceAdapter? = null
-    private lateinit var bleClient: BleUartClient
+    private lateinit var bleManager: BleManager
     private var lastBleSendTime = 0L
+    private var lastCaptureTime = 0L // Debounce cho remote capture
 
     // Tracking & Logic
-    private var trackingLabel: String? = null
+    private var trackingLabel: String? = null  // Keep for backward compat (face/person filter)
+    private var lastLockedLocation: RectF? = null  // Last known position of tracked person
     private var lastDetectedResults: List<YoloHelper.Recognition> = listOf()
     private var currentImgW = 0
     private var currentImgH = 0
     private var currentRotation = 0
-    private var lastLockedLocation: RectF? = null
+    private var trackingManager: TrackingManager? = null
+    
+    // ===== PERSISTENT ID TRACKER (Da bo - Stateless override) =====
+    // private val personTracker = PersonTracker()
+    
+    // Power Saving Mode
+    private var stableLockStartTime = 0L
+    private var isInPowerSaveMode = false
+    
+    // Temporal buffer for occlusion handling
+    private var framesLost = 0
+    private val MAX_FRAMES_LOST = 10 // Only declare LOST after 10 consecutive frames
+    
+    // ========================================================================
+    // STICKY TRACKING: Velocity Prediction + Anti-Hijack
+    // ========================================================================
+    private var lastCenterX = 0f
+    private var lastCenterY = 0f
+    private var velocityX = 0f
+    private var velocityY = 0f
+    private var lastTrackingTime = 0L
+    private val MAX_HIJACK_DISTANCE = 0.15f  // Normalized (0..1). Reject matches farther than 15% of screen
+    
+    // ===== ADVANCED VISUAL SMOOTHING (One Euro Filter - VR/AR Industry Standard) =====
+    // minCutoff: Lower = smoother when stationary (0.3 = very smooth)
+    // beta: Higher = more responsive to fast motion (0.005 = moderate)
+    private val oneEuroBoxFilter = OneEuroBoxFilter(minCutoff = 0.3f, beta = 0.005f, dCutoff = 1.0f)
+    
+    // Adaptive frame skip
+    private var adaptiveFrameSkip = Constants.Camera.FRAME_SKIP_RATIO
 
-    // Bộ làm mượt (Smoothing)
-    // alpha = 0.4: Mượt mà, ít rung. Nếu thấy trễ quá thì tăng lên 0.6
-    private val smootherX = CoordinateSmoother(alpha = 0.4f)
-    private val smootherY = CoordinateSmoother(alpha = 0.4f)
+    // Angle Calculator
+    private var angleCalculator: AngleCalculator? = null
+
+    // ========================================================================
+    // MULTI-LAYER FILTERING PIPELINE (5 Layers for Ultra-Smooth Control)
+    // ========================================================================
+    
+    // Layer 0: One Euro Filter (VR/AR Industry Standard - Adaptive Low-Pass)
+    // Best for human motion: smooth when still, responsive when moving
+    private val oneEuroX = OneEuroFilter(minCutoff = 0.5f, beta = 0.007f)
+    private val oneEuroY = OneEuroFilter(minCutoff = 0.5f, beta = 0.007f)
+    
+    // Layer 1: Kalman Filters (Statistical Noise Reduction)
+    private val kalmanX = KalmanFilter(q = Constants.Filter.DEFAULT_Q, r = Constants.Filter.DEFAULT_R)
+    private val kalmanY = KalmanFilter(q = Constants.Filter.DEFAULT_Q, r = Constants.Filter.DEFAULT_R)
+    
+    // Layer 2: Adaptive EMA (Motion-based Smoothing)
+    private val emaX = AdaptiveEMAFilter(minAlpha = 0.05f, maxAlpha = 0.8f)
+    private val emaY = AdaptiveEMAFilter(minAlpha = 0.05f, maxAlpha = 0.8f)
+    
+    // Layer 3: Intelligent Deadband (Eliminate Micro-Jitter at Center)
+    private val deadbandX = IntelligentDeadband(threshold = 12.0f, hysteresis = 5.0f)
+    private val deadbandY = IntelligentDeadband(threshold = 12.0f, hysteresis = 5.0f)
+    
+    // Layer 4: Rate Limiter (Prevent Sudden Jumps)
+    private val rateLimiterX = RateLimiter(maxDelta = 15.0f)
+    private val rateLimiterY = RateLimiter(maxDelta = 15.0f)
+    
+    // Monitoring
+    private var metricsPusher: MetricsPusher? = null
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var isPushingMetrics = false
+    
 
     private val requestPermLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         if (it[Manifest.permission.CAMERA] == true) view?.post { setUpCamera() }
@@ -78,15 +151,50 @@ class CameraFragment : Fragment(), YoloHelper.DetectorListener {
         super.onCreate(savedInstanceState)
         val btManager = requireContext().getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         bluetoothAdapter = btManager.adapter
-        bleClient = BleUartClient(requireContext(), bluetoothAdapter, object : BleUartClient.Listener {
+
+        bleManager = BleManager(requireContext(), bluetoothAdapter, object : BleManager.Listener {
+            @SuppressLint("MissingPermission")
             override fun onConnected(d: BluetoothDevice) {
                 activity?.runOnUiThread { if(_binding!=null){binding.tvHudWarn.text="BT: ${d.name}"; binding.tvHudWarn.setTextColor(Color.GREEN)} }
             }
             override fun onDisconnected() {
-                activity?.runOnUiThread { if(_binding!=null){binding.tvHudWarn.text="BT Disconnected"; binding.tvHudWarn.setTextColor(Color.RED)} }
+                activity?.runOnUiThread { 
+                    if(_binding!=null){
+                        binding.tvHudWarn.text="BT Disconnected" 
+                        binding.tvHudWarn.setTextColor(Color.RED)
+                        Toast.makeText(context, "⚠️ BLE Disconnected", Toast.LENGTH_SHORT).show()
+                        MetricsCollector.recordError(ErrorCodes.ERR_BLE_DISCONNECTED)
+                    }
+                }
             }
             override fun onConnectFailed(d: BluetoothDevice) {}
-            override fun onDataReceived(data: String) {}
+            override fun onDataReceived(data: String) {
+                // LOG: In ra mọi data nhận được
+                Log.d("BLE_DEBUG", "========== BLE Data Received ==========")
+                Log.d("BLE_DEBUG", "Raw data: '$data'")
+                Log.d("BLE_DEBUG", "Data length: ${data.length}")
+                Log.d("BLE_DEBUG", "Contains CAPTURE: ${data.contains(Constants.Bluetooth.REMOTE_CAPTURE_COMMAND)}")
+                Log.d("BLE_DEBUG", "Time since last capture: ${System.currentTimeMillis() - lastCaptureTime}ms")
+                Log.d("BLE_DEBUG", "Min interval: ${Constants.Bluetooth.MIN_CAPTURE_INTERVAL_MS}ms")
+                
+                // Logic Remote Capture
+                if (data.contains(Constants.Bluetooth.REMOTE_CAPTURE_COMMAND) && System.currentTimeMillis() - lastCaptureTime > Constants.Bluetooth.MIN_CAPTURE_INTERVAL_MS) {
+                    Log.d("BLE_DEBUG", "✓ CAPTURE command accepted! Taking photo...")
+                    lastCaptureTime = System.currentTimeMillis()
+                    activity?.runOnUiThread {
+                        takePhoto()
+                        Toast.makeText(context, "Remote Capture!", Toast.LENGTH_SHORT).show()
+                    }
+                } else {
+                    if (data.contains(Constants.Bluetooth.REMOTE_CAPTURE_COMMAND)) {
+                        Log.d("BLE_DEBUG", "✗ CAPTURE command rejected - too soon (debounce)")
+                    } else {
+                        Log.d("BLE_DEBUG", "Data is not a CAPTURE command")
+                    }
+                }
+                Log.d("BLE_DEBUG", "=======================================")
+            }
+            override fun onMessage(msg: String) {}
         })
     }
 
@@ -99,6 +207,9 @@ class CameraFragment : Fragment(), YoloHelper.DetectorListener {
         super.onViewCreated(view, savedInstanceState)
         backgroundExecutor = Executors.newSingleThreadExecutor()
         try { yoloHelper = YoloHelper(requireContext(), this) } catch(e:Exception){Log.e("CAM", "Yolo Init Fail")}
+        
+        // Load monitoring settings
+        loadMonitoringSettings()
 
         checkPermissions()
 
@@ -115,45 +226,177 @@ class CameraFragment : Fragment(), YoloHelper.DetectorListener {
             if (bluetoothAdapter?.isEnabled == true) showScanDialogSafe()
             else enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
         }
+        
+        binding.btnMonitoring.setOnClickListener {
+            showMonitoringDialog()
+        }
 
         binding.btnTargets.setOnClickListener { showTargetSelectionDialog() }
         binding.btnCancelTrack.setOnClickListener { stopTracking() }
+        binding.btnCapture.setOnClickListener { takePhoto() }
+        binding.btnRecordVideo.setOnClickListener { captureVideo() }
     }
+    
+
 
     private fun stopTracking() {
         trackingLabel = null
         lastLockedLocation = null
-        smootherX.reset()
-        smootherY.reset()
+        framesLost = 0
+        
+        // Reset all filters
+        oneEuroX.reset()
+        oneEuroY.reset()
+        oneEuroBoxFilter.reset()
+        kalmanX.reset()
+        kalmanY.reset()
+        emaX.reset()
+        emaY.reset()
+        deadbandX.reset()
+        deadbandY.reset()
+        rateLimiterX.reset()
+        rateLimiterY.reset()
+        
+        // Reset velocity prediction
+        velocityX = 0f
+        velocityY = 0f
+        lastCenterX = 0f
+        lastCenterY = 0f
+        lastTrackingTime = 0L
+        
+        // Unlock the PersonTracker
+        // personTracker.unlockTarget()
+        
         binding.btnCancelTrack.visibility = View.GONE
         binding.tvHudLine1.text = "Tracking Stopped"
         binding.tvHudLine1.setTextColor(Color.WHITE)
     }
-
+    
     private fun showTargetSelectionDialog() {
-        val availableLabels = lastDetectedResults.map { it.label }.distinct()
-        if (availableLabels.isEmpty()) {
-            Toast.makeText(context, "Chưa thấy vật thể nào!", Toast.LENGTH_SHORT).show()
-            return
-        }
+        // Chỉ cho chọn chế độ: Track FACE hoặc Track BODY (Person)
+        val options = listOf("👤 Start Tracking FACE", "🧍 Start Tracking BODY (Person)")
+        
         val dialog = BottomSheetDialog(requireContext())
         val rv = androidx.recyclerview.widget.RecyclerView(requireContext())
         rv.layoutManager = androidx.recyclerview.widget.LinearLayoutManager(context)
-        rv.adapter = LabelAdapter(availableLabels) { selectedLabel ->
-            trackingLabel = selectedLabel
-            lastLockedLocation = null
-            smootherX.reset()
-            smootherY.reset()
+        rv.adapter = LabelAdapter(options) { selectedItem ->
+            
+            val label = if (selectedItem.contains("FACE")) "face" else "person"
+            trackingLabel = label
+            
+            // Kích hoạt Tracking Manager
+            trackingManager?.setTarget(label)
+            
+            // RESET TRẠNG THÁI UI
+            lastLockedLocation = null 
+            framesLost = 0
+            
             binding.btnCancelTrack.visibility = View.VISIBLE
-            binding.btnCancelTrack.text = "STOP: ${selectedLabel.uppercase()}"
+            binding.btnCancelTrack.text = "STOP TRACKING"
+            
+            Toast.makeText(context, "Started Tracking: ${label.uppercase()}", Toast.LENGTH_SHORT).show()
             dialog.dismiss()
         }
         dialog.setContentView(rv)
         dialog.show()
     }
 
+    private fun takePhoto() {
+        // ... (Giữ nguyên code chụp ảnh cũ) ...
+        val imageCapture = imageCapture ?: return
+        
+        // Hiệu ứng chớp màn hình
+        binding.root.foreground = android.graphics.drawable.ColorDrawable(Color.WHITE)
+        binding.root.postDelayed({ binding.root.foreground = null }, 50)
+
+        val name = "PoseLandmarker_" + System.currentTimeMillis() + ".jpg"
+        val contentValues = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            if(Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
+                put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/PoseLandmarker")
+            }
+        }
+
+        val outputOptions = ImageCapture.OutputFileOptions.Builder(
+            requireContext().contentResolver,
+            android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            contentValues
+        ).build()
+
+        imageCapture.takePicture(
+            outputOptions,
+            ContextCompat.getMainExecutor(requireContext()),
+            object : ImageCapture.OnImageSavedCallback {
+                override fun onError(exc: ImageCaptureException) {
+                    Toast.makeText(context, "Lỗi chụp ảnh: ${exc.message}", Toast.LENGTH_SHORT).show()
+                }
+                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                    Toast.makeText(context, "Đã lưu ảnh!", Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun captureVideo() {
+        val videoCapture = this.videoCapture ?: return
+
+        // 1. Nếu đang quay -> STOP
+        val curRecording = recording
+        if (curRecording != null) {
+            curRecording.stop()
+            recording = null
+            return
+        }
+
+        // 2. Nếu chưa quay -> START
+        val name = "PoseVideo_" + System.currentTimeMillis() + ".mp4"
+        val contentValues = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.Video.Media.DISPLAY_NAME, name)
+            put(android.provider.MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
+                put(android.provider.MediaStore.Video.Media.RELATIVE_PATH, "Movies/PoseLandmarker")
+            }
+        }
+
+        val mediaStoreOutputOptions = MediaStoreOutputOptions
+            .Builder(requireContext().contentResolver, android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
+            .setContentValues(contentValues)
+            .build()
+        
+        recording = videoCapture.output
+            .prepareRecording(requireContext(), mediaStoreOutputOptions)
+            .apply {
+                if (PermissionChecker.checkSelfPermission(requireContext(), Manifest.permission.RECORD_AUDIO) == PermissionChecker.PERMISSION_GRANTED) {
+                    withAudioEnabled()
+                }
+            }
+            .start(ContextCompat.getMainExecutor(requireContext())) { recordEvent ->
+                when(recordEvent) {
+                    is VideoRecordEvent.Start -> {
+                        binding.btnRecordVideo.setImageResource(android.R.drawable.ic_media_pause)
+                        binding.tvHudLine1.text = "🔴 RECORDING..."
+                        binding.tvHudLine1.setTextColor(Color.RED)
+                    }
+                    is VideoRecordEvent.Finalize -> {
+                        if (!recordEvent.hasError()) {
+                            Toast.makeText(context, "Video Saved!", Toast.LENGTH_SHORT).show()
+                        } else {
+                            recording?.close()
+                            recording = null
+                            Log.e("Video", "Error: ${recordEvent.error}")
+                        }
+                        binding.btnRecordVideo.setImageResource(android.R.drawable.ic_menu_camera) // Quay về icon cũ
+                         binding.tvHudLine1.text = "Tracking Stopped" // Reset text
+                         binding.tvHudLine1.setTextColor(Color.WHITE)
+                    }
+                }
+            }
+    }
+
     private fun checkPermissions() {
-        val perms = mutableListOf(Manifest.permission.CAMERA)
+        val perms = mutableListOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= 31) {
             perms.add(Manifest.permission.BLUETOOTH_SCAN)
             perms.add(Manifest.permission.BLUETOOTH_CONNECT)
@@ -161,6 +404,47 @@ class CameraFragment : Fragment(), YoloHelper.DetectorListener {
             perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
         }
         requestPermLauncher.launch(perms.toTypedArray())
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun showScanDialogSafe() {
+        foundDevices.clear()
+        
+        val recyclerView = androidx.recyclerview.widget.RecyclerView(requireContext())
+        recyclerView.layoutManager = androidx.recyclerview.widget.LinearLayoutManager(requireContext())
+        
+        deviceAdapter = DeviceAdapter(foundDevices) { device ->
+            scanDialog?.dismiss()
+            bleScanner?.stopScan(scanCallback)
+            bleManager.connect(device.address)
+        }
+        recyclerView.adapter = deviceAdapter
+        
+        scanDialog = BottomSheetDialog(requireContext())
+        scanDialog?.setContentView(recyclerView)
+        scanDialog?.setOnDismissListener {
+            bleScanner?.stopScan(scanCallback)
+        }
+        scanDialog?.show()
+        
+        bleScanner = bluetoothAdapter?.bluetoothLeScanner
+        bleScanner?.startScan(scanCallback)
+        
+        // Auto-stop scan after 10 seconds
+        Handler(Looper.getMainLooper()).postDelayed({
+            bleScanner?.stopScan(scanCallback)
+        }, 10000)
+    }
+    
+    private val scanCallback = object : android.bluetooth.le.ScanCallback() {
+        @SuppressLint("MissingPermission")
+        override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
+            val device = result.device
+            if (device.name != null && !foundDevices.contains(device)) {
+                foundDevices.add(device)
+                deviceAdapter?.notifyDataSetChanged()
+            }
+        }
     }
 
     private fun setUpCamera() {
@@ -171,17 +455,32 @@ class CameraFragment : Fragment(), YoloHelper.DetectorListener {
                 val provider = providerFuture.get()
                 provider.unbindAll()
 
-                val preview = Preview.Builder().setTargetResolution(Size(640, 480)).build()
+                val preview = Preview.Builder().setTargetResolution(Size(Constants.Camera.PREVIEW_WIDTH, Constants.Camera.PREVIEW_HEIGHT)).build()
 
                 val analyzer = ImageAnalysis.Builder()
-                    .setTargetResolution(Size(640, 480))
-                    // [QUAN TRỌNG] Chỉ giữ frame mới nhất
+                    .setTargetResolution(Size(Constants.Camera.ANALYSIS_WIDTH, Constants.Camera.ANALYSIS_HEIGHT))
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                     .build()
 
+                imageCapture = ImageCapture.Builder()
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                    .build()
+                
+                // Video Capture Setup
+                val recorder = Recorder.Builder()
+                    .setQualitySelector(QualitySelector.from(Quality.SD)) // SD for performance
+                    .build()
+                videoCapture = VideoCapture.withOutput(recorder)
+
                 backgroundExecutor?.let { executor ->
+                    var frameCounter = 0L // Biến đếm frame
                     analyzer.setAnalyzer(executor) { proxy ->
+                        // Adaptive frame skip based on performance
+                        if (frameCounter++ % adaptiveFrameSkip.toLong() != 0L) {
+                            proxy.close()
+                            return@setAnalyzer
+                        }
                         try {
                             val bitmap = proxy.toBitmap()
                             val rotation = proxy.imageInfo.rotationDegrees
@@ -194,166 +493,159 @@ class CameraFragment : Fragment(), YoloHelper.DetectorListener {
                         } catch (e: Exception) {
                             Log.e("Analyzer", "Error", e)
                         } finally {
-                            proxy.close() // BẮT BUỘC ĐÓNG PROXY
+                            proxy.close()
                         }
                     }
                 }
                 preview.setSurfaceProvider(binding.viewFinder.surfaceProvider)
-                provider.bindToLifecycle(viewLifecycleOwner, CameraSelector.Builder().requireLensFacing(cameraFacing).build(), preview, analyzer)
+                val camera = provider.bindToLifecycle(viewLifecycleOwner, CameraSelector.Builder().requireLensFacing(cameraFacing).build(), preview, analyzer, imageCapture, videoCapture)
+                cameraControl = camera.cameraControl
+                cameraInfo = camera.cameraInfo
+                
+                // Initialize AngleCalculator with actual preview dimensions
+                binding.viewFinder.post {
+                    val w = binding.viewFinder.width.toFloat()
+                    val h = binding.viewFinder.height.toFloat()
+                    
+                    angleCalculator = AngleCalculator(w, h)
+                    
+                    // [Refactor] Init Tracking Manager (Robust Filtering)
+                    trackingManager = TrackingManager(angleCalculator, w, h)
+                }
             } catch (e: Exception) { Log.e("Camera", "Bind failed", e) }
         }, ContextCompat.getMainExecutor(requireContext()))
     }
 
-    // ==================================================================================
-    // LOGIC XỬ LÝ CHÍNH
-    // ==================================================================================
     override fun onResults(results: List<YoloHelper.Recognition>, inferenceTime: Long) {
         activity?.runOnUiThread {
             if (_binding == null) return@runOnUiThread
+            
+            // Record metrics
+            MetricsCollector.recordFrame()
+            MetricsCollector.lastInferenceTime = inferenceTime
 
-            val validDetections = results.filter { it.label == "face" || it.label == "person" }
-            val finalResults = ArrayList<YoloHelper.Recognition>()
+            // Step 1: Filter valid detections
+            // CHỈ LẤY FACE HOẶC PERSON (Tuỳ nhu cầu)
+            val validResults = results.filter { it.label == "face" || it.label == "person" }
+            
+            lastDetectedResults = validResults
 
-            if (trackingLabel != null) {
-                // --- CHẾ ĐỘ TRACKING ---
-                val candidates = validDetections.filter { it.label == trackingLabel }
-
-                if (candidates.isNotEmpty()) {
-                    val selectedTarget: YoloHelper.Recognition
-
-                    if (lastLockedLocation != null) {
-                        // Nhớ mặt: Chọn người gần vị trí cũ nhất
-                        selectedTarget = candidates.minByOrNull {
-                            calculateDistance(it.location, lastLockedLocation!!)
-                        } ?: candidates[0]
-                    } else {
-                        // Mới track: Chọn người confidence cao nhất
-                        selectedTarget = candidates.maxByOrNull { it.confidence } ?: candidates[0]
-                    }
-
-                    lastLockedLocation = selectedTarget.location
-                    finalResults.add(selectedTarget)
-                } else {
-                    lastLockedLocation = null
-                }
-            } else {
-                // --- CHẾ ĐỘ THƯỜNG ---
-                lastLockedLocation = null
-                val bestFace = validDetections.filter { it.label == "face" }.maxByOrNull { it.confidence }
-                val bestPerson = validDetections.filter { it.label == "person" }.maxByOrNull { it.confidence }
-                if (bestFace != null) finalResults.add(bestFace)
-                if (bestPerson != null) finalResults.add(bestPerson)
-            }
-
-            lastDetectedResults = finalResults
-            val finalW = if (currentRotation == 90 || currentRotation == 270) currentImgH else currentImgW
-            val finalH = if (currentRotation == 90 || currentRotation == 270) currentImgW else currentImgH
-
-            // Vẽ Overlay
-            binding.overlay.setResults(finalResults, finalH, finalW, cameraFacing == CameraSelector.LENS_FACING_FRONT)
-
-            // Xử lý gửi Bluetooth
-            if (trackingLabel != null) {
-                if (finalResults.isNotEmpty()) {
-                    val target = finalResults[0]
-
-                    val screenCenterX = binding.overlay.width / 2f
-                    val screenCenterY = binding.overlay.height / 2f
-                    val objCenterRaw = binding.overlay.getCenterPixel(target.location)
-
-                    // 1. LÀM MƯỢT TỌA ĐỘ
-                    val smoothX = smootherX.update(objCenterRaw.x, isX = true)
-                    val smoothY = smootherY.update(objCenterRaw.y, isX = false)
-
-                    // 2. TÍNH OFFSET
-                    val dX = smoothX - screenCenterX
-                    val dY = smoothY - screenCenterY
-
-                    // 3. TÍNH GÓC (ANGLE)
-                    val focalLength = binding.overlay.width.toFloat() * 0.866f
-                    val angleX = Math.toDegrees(atan(dX / focalLength).toDouble()).roundToInt()
-                    val angleY = Math.toDegrees(atan(dY / focalLength).toDouble()).roundToInt()
-
-                    binding.tvHudLine1.text = "LOCK: ${target.label.uppercase()} | Ang: $angleX°, $angleY°"
-                    binding.tvHudLine1.setTextColor(Color.GREEN)
-
-                    // 4. GỬI BLUETOOTH (30ms ~ 33Hz)
-                    if (::bleClient.isInitialized && System.currentTimeMillis() - lastBleSendTime > 30) {
-                        val data = "{{[x]:${dX.toInt()};[y]:${dY.toInt()};[ax]:$angleX;[ay]:$angleY}}"
-                        bleClient.send(data)
+            // ===== TRACKING LOGIC (DELEGATED TO TRACKING MANAGER) =====
+            // Sử dụng bộ lọc cao cấp (Kalman, EMA...) trong TrackingManager thay vì logic rời rạc
+            
+            if (trackingManager != null && trackingManager!!.isTracking()) {
+                
+                val result = trackingManager!!.processDetections(
+                    validResults,
+                    { rect -> binding.overlay.getCenterPixel(rect) }, // Hàm chuyển đổi toạ độ
+                    cameraFacing == CameraSelector.LENS_FACING_FRONT
+                )
+                
+                // Update Local State for UI
+                lastLockedLocation = result.lastLockLocation
+                
+                // Update HUD
+                binding.tvHudLine1.text = result.status
+                binding.tvHudLine1.setTextColor(result.statusColor)
+                
+                // Logic Gửi BLE & Overlay
+                if (result.lastLockLocation != null) {
+                    // === LOCKED ===
+                    
+                    // Gửi BLE (Góc đã được lọc kỹ 5 bước)
+                    if (::bleManager.isInitialized && bleManager.isConnected && System.currentTimeMillis() - lastBleSendTime > Constants.Bluetooth.MIN_SEND_INTERVAL_MS) {
+                        val data = "{{[ax]:${result.panAngle.toInt()};[ay]:${result.tiltAngle.toInt()}}}"
+                        bleManager.sendReliable(data)
                         lastBleSendTime = System.currentTimeMillis()
                     }
-
+                    
+                    // Chỉ hiển thị box đang được lock
+                    val displayList = validResults.filter { it.location == result.lastLockLocation }
+                    binding.overlay.setResults(displayList, currentImgH, currentImgW, cameraFacing == CameraSelector.LENS_FACING_FRONT, result.trackingError)
+                    
                 } else {
-                    binding.tvHudLine1.text = "LOST TARGET..."
-                    binding.tvHudLine1.setTextColor(Color.RED)
-                    // Gửi LOST thưa hơn (500ms) để không spam
-                    if (::bleClient.isInitialized && System.currentTimeMillis() - lastBleSendTime > 500) {
-                        bleClient.send("{{[status]:LOST}}")
-                        lastBleSendTime = System.currentTimeMillis()
-                    }
+                    // === SEARCHING / LOST ===
+                    // Không gửi BLE (để Gimbal tự xử lý Coasting)
+                    
+                    // Hiển thị tất cả candidate để người dùng biết
+                    binding.overlay.setResults(validResults, currentImgH, currentImgW, cameraFacing == CameraSelector.LENS_FACING_FRONT, 0f)
                 }
+
             } else {
+                // === NO TRACKING ===
                 val fps = if (inferenceTime > 0) 1000 / inferenceTime else 0
-                val names = finalResults.joinToString { it.label }
-                binding.tvHudLine1.text = "FPS: $fps | Seeing: $names"
+                binding.tvHudLine1.text = "FPS: $fps | ${validResults.size} detected"
                 binding.tvHudLine1.setTextColor(Color.WHITE)
+                
+                // Hiển thị tất cả
+                binding.overlay.setResults(validResults, currentImgH, currentImgW, cameraFacing == CameraSelector.LENS_FACING_FRONT, 0f)
             }
         }
     }
 
-    // Hàm tính khoảng cách an toàn (Sửa lỗi pow/Float)
     private fun calculateDistance(boxA: RectF, boxB: RectF): Float {
         val dx = boxA.centerX() - boxB.centerX()
         val dy = boxA.centerY() - boxB.centerY()
         return sqrt((dx * dx + dy * dy).toDouble()).toFloat()
     }
 
-    // Class làm mượt (EMA)
-    class CoordinateSmoother(private val alpha: Float = 0.5f) {
-        private var lastX: Float? = null
-        private var lastY: Float? = null
-        fun update(newValue: Float, isX: Boolean): Float {
-            val lastVal = if (isX) lastX else lastY
-            if (lastVal == null) {
-                if (isX) lastX = newValue else lastY = newValue
-                return newValue
-            }
-            val smoothed = (alpha * newValue) + ((1 - alpha) * lastVal)
-            if (isX) lastX = smoothed else lastY = smoothed
-            return smoothed
-        }
-        fun reset() { lastX = null; lastY = null }
-    }
-
-    // Bluetooth UI
-    @SuppressLint("MissingPermission")
-    private fun showScanDialogSafe() {
-        try {
-            scanDialog = BottomSheetDialog(requireContext())
-            val rv = androidx.recyclerview.widget.RecyclerView(requireContext())
-            rv.layoutManager = androidx.recyclerview.widget.LinearLayoutManager(context)
-            foundDevices.clear()
-            deviceAdapter = DeviceAdapter(foundDevices) { bleClient.connect(it.address); scanDialog?.dismiss() }
-            rv.adapter = deviceAdapter
-            scanDialog?.setContentView(rv)
-            scanDialog?.show()
-            bleScanner = bluetoothAdapter?.bluetoothLeScanner
-            bleScanner?.startScan(object : ScanCallback() {
-                override fun onScanResult(t: Int, r: ScanResult) {
-                    if (r.device.name != null && !foundDevices.any { it.address == r.device.address }) {
-                        foundDevices.add(r.device)
-                        deviceAdapter?.notifyDataSetChanged()
-                    }
-                }
-            })
-        } catch (e: Exception) { Toast.makeText(context, "Lỗi BT", Toast.LENGTH_SHORT).show() }
-    }
 
     override fun onError(e: String) { Log.e("YOLO", e) }
+    
+    private fun loadMonitoringSettings() {
+        val prefs = requireContext().getSharedPreferences("monitoring_prefs", android.content.Context.MODE_PRIVATE)
+        val laptopIP = prefs.getString("laptop_ip", "") ?: ""
+        val enabled = prefs.getBoolean("monitoring_enabled", false)
+        if (enabled && laptopIP.isNotEmpty()) {
+            metricsPusher = MetricsPusher(laptopIP)
+            startMetricsPushing()
+        }
+    }
+    
+    private fun showMonitoringDialog() {
+        val dialogView = layoutInflater.inflate(R.layout.dialog_monitoring_settings, null)
+        val prefs = requireContext().getSharedPreferences("monitoring_prefs", android.content.Context.MODE_PRIVATE)
+        val etLaptopIP = dialogView.findViewById<android.widget.EditText>(R.id.etLaptopIP)
+        val switchMonitoring = dialogView.findViewById<android.widget.Switch>(R.id.switchMonitoring)
+        val btnSave = dialogView.findViewById<android.widget.Button>(R.id.btnSave)
+        val btnCancel = dialogView.findViewById<android.widget.Button>(R.id.btnCancel)
+        etLaptopIP.setText(prefs.getString("laptop_ip", ""))
+        switchMonitoring.isChecked = prefs.getBoolean("monitoring_enabled", false)
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(requireContext()).setView(dialogView).create()
+        btnSave.setOnClickListener {
+            val laptopIP = etLaptopIP.text.toString().trim()
+            val enabled = switchMonitoring.isChecked
+            prefs.edit().apply { putString("laptop_ip", laptopIP); putBoolean("monitoring_enabled", enabled); apply() }
+            stopMetricsPushing()
+            if (enabled && laptopIP.isNotEmpty()) {
+                metricsPusher = MetricsPusher(laptopIP)
+                startMetricsPushing()
+                Toast.makeText(context, "📊 $laptopIP:5000", Toast.LENGTH_SHORT).show()
+            } else {
+                metricsPusher = null
+                Toast.makeText(context, "Monitoring off", Toast.LENGTH_SHORT).show()
+            }
+            dialog.dismiss()
+        }
+        btnCancel.setOnClickListener { dialog.dismiss() }
+        dialog.show()
+    }
+    
+    private fun startMetricsPushing() {
+        if (isPushingMetrics) return
+        isPushingMetrics = true
+        val pushRunnable = object : Runnable { override fun run() { metricsPusher?.push(); if (isPushingMetrics) handler.postDelayed(this, 100) } }
+        handler.post(pushRunnable)
+    }
+    
+    private fun stopMetricsPushing() {
+        isPushingMetrics = false
+        handler.removeCallbacksAndMessages(null)
+    }
 
     override fun onDestroyView() {
         super.onDestroyView()
+        stopMetricsPushing()
         try { ProcessCameraProvider.getInstance(requireContext()).get().unbindAll() } catch (e: Exception) {}
         _binding = null
         backgroundExecutor?.shutdown()

@@ -3,8 +3,12 @@
 **/.idea
 **/.ipynb_checkpoints
 
-# TensorFlow Lite model
+# Large backup files
+*.zip
+*.tar.gz
 
+# TensorFlow Lite model (Allow .tflite if needed for repo, but usually lfs. Here keeping valid ones)
+# *.tflite
 
 # MediaPipe Task files
 *.tasks

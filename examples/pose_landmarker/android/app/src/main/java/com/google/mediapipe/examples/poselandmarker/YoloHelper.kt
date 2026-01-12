@@ -17,6 +17,7 @@ import org.tensorflow.lite.support.image.ImageProcessor
 import org.tensorflow.lite.support.image.TensorImage
 import org.tensorflow.lite.support.image.ops.ResizeOp
 import org.tensorflow.lite.support.image.ops.Rot90Op
+import org.tensorflow.lite.support.image.ops.ResizeWithCropOrPadOp // ✅ Thêm Import
 import org.tensorflow.lite.support.tensorbuffer.TensorBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
@@ -25,11 +26,11 @@ import kotlin.math.min
 class YoloHelper(val context: Context, val listener: DetectorListener) {
 
     companion object {
-        const val MODEL_PATH = "best_int8.tflite" // Đảm bảo file này là bản imgsz=320
-        const val INPUT_SIZE = 320 // ✅ ĐÃ GIẢM XUỐNG 320 ĐỂ TĂNG TỐC
-        const val CONFIDENCE_THRESHOLD = 0.55f
-        const val IOU_THRESHOLD = 0.5f
-        val LABELS = listOf("face", "person")
+        const val MODEL_PATH = Constants.AI.MODEL_PATH
+        const val INPUT_SIZE = Constants.AI.INPUT_SIZE
+        const val CONFIDENCE_THRESHOLD = Constants.AI.CONFIDENCE_THRESHOLD
+        const val IOU_THRESHOLD = Constants.AI.IOU_THRESHOLD
+        val LABELS = Constants.AI.LABELS
     }
 
     data class Recognition(val id: String, val label: String, val confidence: Float, val location: RectF)
@@ -71,14 +72,14 @@ class YoloHelper(val context: Context, val listener: DetectorListener) {
                 } catch (e: Exception) {
                     Log.e("YoloHelper", "NNAPI Failed, falling back to CPU", e)
                     options.setUseXNNPACK(true)
-                    options.setNumThreads(4)
+                    options.setNumThreads(Runtime.getRuntime().availableProcessors())
                 }
             }
             // 3. Đường cùng: Dùng CPU thuần (XNNPACK)
             else {
                 Log.w("YoloHelper", "⚠️ Hardware accel failed. Using CPU XNNPACK.")
                 options.setUseXNNPACK(true)
-                options.setNumThreads(4)
+                options.setNumThreads(Runtime.getRuntime().availableProcessors()) // [TỐI ƯU] Số luồng linh hoạt
             }
 
             val modelFile = FileUtil.loadMappedFile(context, MODEL_PATH)
@@ -107,9 +108,15 @@ class YoloHelper(val context: Context, val listener: DetectorListener) {
         try {
             val startTime = SystemClock.uptimeMillis()
             val numRotation = rotation / 90
+            
+            // [FIX] Tính toán kích thước Crop vuông để tránh méo hình
+            // Lấy kích thước cạnh nhỏ nhất -> Crop vuông ở giữa (Center Crop)
+            val cropSize = min(bitmap.width, bitmap.height)
+            
             val imageProcessor = ImageProcessor.Builder()
-                .add(Rot90Op(-numRotation))
-                .add(ResizeOp(INPUT_SIZE, INPUT_SIZE, ResizeOp.ResizeMethod.BILINEAR))
+                .add(ResizeWithCropOrPadOp(cropSize, cropSize)) // 1. Cắt vuông trước
+                .add(Rot90Op(-numRotation))                     // 2. Xoay
+                .add(ResizeOp(INPUT_SIZE, INPUT_SIZE, ResizeOp.ResizeMethod.BILINEAR)) // 3. Resize về 320x320
                 .add(CastOp(DataType.FLOAT32))
                 .add(NormalizeOp(0f, 255f))
                 .build()
@@ -121,56 +128,73 @@ class YoloHelper(val context: Context, val listener: DetectorListener) {
             val outputBuffer = TensorBuffer.createFixedSize(outputShape, DataType.FLOAT32)
             interpreter!!.run(processedImage.buffer, outputBuffer.buffer.rewind())
 
-            val bestBoxes = parseAndNMS(outputBuffer.floatArray)
+            val bestBoxes = parseAndNMS(outputBuffer.floatArray, bitmap.width, bitmap.height)
             listener.onResults(bestBoxes, SystemClock.uptimeMillis() - startTime)
-
-        } catch (e: Exception) {
-            Log.e("YoloHelper", "Error: ${e.message}")
-        } finally {
-            isProcessing.set(false)
-        }
-    }
-
-    private fun parseAndNMS(output: FloatArray): List<Recognition> {
-        val detections = ArrayList<Recognition>()
-        val numAnchors = if (isChannelLast) outputShape[1] else outputShape[2]
-        val numChannels = if (isChannelLast) outputShape[2] else outputShape[1]
-
-        for (i in 0 until numAnchors) {
-            var maxScore = 0f
-            var classIndex = -1
-
-            for (c in 0 until (numChannels - 4)) {
-                val score = if (isChannelLast) output[i * numChannels + (4 + c)]
-                else output[(4 + c) * numAnchors + i]
-                if (score > maxScore) { maxScore = score; classIndex = c }
-            }
-
-            if (maxScore > CONFIDENCE_THRESHOLD) {
-                val cx: Float; val cy: Float; val w: Float; val h: Float
-                if (isChannelLast) {
-                    val offset = i * numChannels
-                    cx = output[offset + 0]; cy = output[offset + 1]
-                    w  = output[offset + 2]; h  = output[offset + 3]
-                } else {
-                    cx = output[0 * numAnchors + i]; cy = output[1 * numAnchors + i]
-                    w  = output[2 * numAnchors + i]; h  = output[3 * numAnchors + i]
-                }
-
-                // Auto-detect scale
-                val scale = if (cx > 1.0f || w > 1.0f) INPUT_SIZE.toFloat() else 1.0f
-
-                val left = (cx - w/2) / scale
-                val top = (cy - h/2) / scale
-                val right = (cx + w/2) / scale
-                val bottom = (cy + h/2) / scale
-
-                val rect = RectF(max(0f, left), max(0f, top), min(1f, right), min(1f, bottom))
-                detections.add(Recognition(i.toString(), LABELS.getOrElse(classIndex){"?"}, maxScore, rect))
-            }
-        }
-        return nms(detections)
-    }
+ 
+         } catch (e: Exception) {
+             Log.e("YoloHelper", "Error: ${e.message}")
+         } finally {
+             isProcessing.set(false)
+         }
+     }
+ 
+     private fun parseAndNMS(output: FloatArray, srcW: Int, srcH: Int): List<Recognition> {
+         val detections = ArrayList<Recognition>()
+         val numAnchors = if (isChannelLast) outputShape[1] else outputShape[2]
+         val numChannels = if (isChannelLast) outputShape[2] else outputShape[1]
+         
+         // Tính toán tham số Crop để map ngược toạ độ
+         val cropSize = min(srcW, srcH).toFloat()
+         val padX = (srcW - cropSize) / 2f
+         val padY = (srcH - cropSize) / 2f
+ 
+         for (i in 0 until numAnchors) {
+             var maxScore = 0f
+             var classIndex = -1
+ 
+             for (c in 0 until (numChannels - 4)) {
+                 val score = if (isChannelLast) output[i * numChannels + (4 + c)]
+                 else output[(4 + c) * numAnchors + i]
+                 if (score > maxScore) { maxScore = score; classIndex = c }
+             }
+ 
+             if (maxScore > CONFIDENCE_THRESHOLD) {
+                 val cx: Float; val cy: Float; val w: Float; val h: Float
+                 if (isChannelLast) {
+                     val offset = i * numChannels
+                     cx = output[offset + 0]; cy = output[offset + 1]
+                     w  = output[offset + 2]; h  = output[offset + 3]
+                 } else {
+                     cx = output[0 * numAnchors + i]; cy = output[1 * numAnchors + i]
+                     w  = output[2 * numAnchors + i]; h  = output[3 * numAnchors + i]
+                 }
+ 
+                 // 1. Normalized (0..1) relative to CROP (320x320)
+                 val scale = if (cx > 1.0f || w > 1.0f) INPUT_SIZE.toFloat() else 1.0f
+                 
+                 val cxCrop = cx / scale
+                 val cyCrop = cy / scale
+                 val wCrop = w / scale
+                 val hCrop = h / scale
+                 
+                 // 2. Convert to Full Image Normalized (0..1)
+                 // Công thức: (PosInCrop * CropSize + Padding) / FullSize
+                 val cxFull = (cxCrop * cropSize + padX) / srcW
+                 val cyFull = (cyCrop * cropSize + padY) / srcH
+                 val wFull = (wCrop * cropSize) / srcW
+                 val hFull = (hCrop * cropSize) / srcH
+ 
+                 val left = cxFull - wFull/2
+                 val top = cyFull - hFull/2
+                 val right = cxFull + wFull/2
+                 val bottom = cyFull + hFull/2
+ 
+                 val rect = RectF(max(0f, left), max(0f, top), min(1f, right), min(1f, bottom))
+                 detections.add(Recognition(i.toString(), LABELS.getOrElse(classIndex){"?"}, maxScore, rect))
+             }
+         }
+         return nms(detections)
+     }
 
     private fun nms(detections: ArrayList<Recognition>): List<Recognition> {
         val nmsList = ArrayList<Recognition>()

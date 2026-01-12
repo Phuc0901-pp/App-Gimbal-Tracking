@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gimbal Tracking Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0"></script>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0f0f23;
+            --bg-secondary: #1a1a2e;
+            --bg-card: linear-gradient(145deg, #1e1e32 0%, #16162a 100%);
+            --border: rgba(255, 255, 255, 0.08);
+            --text: #ffffff;
+            --text-muted: #a0a0b0;
+            --accent-blue: #6366f1;
+            --accent-green: #10b981;
+            --accent-yellow: #f59e0b;
+            --accent-red: #ef4444;
+            --accent-purple: #8b5cf6;
+            --accent-cyan: #06b6d4;
+            --glow-blue: rgba(99, 102, 241, 0.4);
+            --glow-green: rgba(16, 185, 129, 0.4);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            background-image:
+                radial-gradient(ellipse at top left, rgba(99, 102, 241, 0.15) 0%, transparent 50%),
+                radial-gradient(ellipse at bottom right, rgba(139, 92, 246, 0.1) 0%, transparent 50%);
+            color: var(--text);
+            min-height: 100vh;
+        }
+
+        .header {
+            background: rgba(26, 26, 46, 0.8);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            padding: 16px 32px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .logo-container {
+            width: 56px;
+            height: 56px;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 8px 32px rgba(99, 102, 241, 0.3);
+            border: 2px solid var(--accent-blue);
+        }
+
+        .logo-container img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .header-info {
+            flex: 1;
+        }
+
+        .header-info h1 {
+            font-size: 24px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #fff 0%, #a0a0ff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .header-info p {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        .status-pill {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 20px;
+            background: rgba(16, 185, 129, 0.15);
+            border: 1px solid var(--accent-green);
+            border-radius: 50px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--accent-green);
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--accent-green);
+            box-shadow: 0 0 12px var(--glow-green);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                transform: scale(1);
+                opacity: 1;
+            }
+
+            50% {
+                transform: scale(1.2);
+                opacity: 0.7;
+            }
+        }
+
+        .container {
+            max-width: 1800px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .metric-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 20px 16px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .metric-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--accent-blue), var(--accent-purple));
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .metric-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 12px 40px rgba(99, 102, 241, 0.2);
+        }
+
+        .metric-card:hover::before {
+            opacity: 1;
+        }
+
+        .metric-icon {
+            font-size: 24px;
+            margin-bottom: 8px;
+        }
+
+        .metric-value {
+            font-size: 28px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: -1px;
+        }
+
+        .metric-value.blue {
+            color: var(--accent-blue);
+        }
+
+        .metric-value.green {
+            color: var(--accent-green);
+        }
+
+        .metric-value.yellow {
+            color: var(--accent-yellow);
+        }
+
+        .metric-value.red {
+            color: var(--accent-red);
+        }
+
+        .metric-value.cyan {
+            color: var(--accent-cyan);
+        }
+
+        .metric-value.purple {
+            color: var(--accent-purple);
+        }
+
+        .metric-label {
+            font-size: 10px;
+            color: var(--text-muted);
+            margin-top: 6px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 600;
+        }
+
+        .charts-section {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            margin-bottom: 24px;
+        }
+
+        .logs-section {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            overflow: hidden;
+        }
+
+        .card-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .card-header-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+        }
+
+        .card-header-icon.blue {
+            background: rgba(99, 102, 241, 0.2);
+        }
+
+        .card-header-icon.green {
+            background: rgba(16, 185, 129, 0.2);
+        }
+
+        .card-header-icon.red {
+            background: rgba(239, 68, 68, 0.2);
+        }
+
+        .card-header-icon.purple {
+            background: rgba(139, 92, 246, 0.2);
+        }
+
+        .card-header-icon.cyan {
+            background: rgba(6, 182, 212, 0.2);
+        }
+
+        .card-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .card-body {
+            padding: 16px 20px;
+        }
+
+        .chart-wrapper {
+            position: relative;
+            height: 200px;
+        }
+
+        .log-panel {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            height: 200px;
+            overflow-y: auto;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            padding: 12px;
+        }
+
+        .log-entry {
+            padding: 8px 12px;
+            margin-bottom: 6px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .log-time {
+            color: var(--text-muted);
+            font-size: 10px;
+            white-space: nowrap;
+        }
+
+        .log-badge {
+            padding: 3px 10px;
+            border-radius: 6px;
+            font-size: 9px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .log-badge.tx {
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+            color: white;
+        }
+
+        .log-badge.rx {
+            background: linear-gradient(135deg, var(--accent-green), var(--accent-cyan));
+            color: white;
+        }
+
+        .log-message {
+            color: var(--text);
+            flex: 1;
+            word-break: break-all;
+        }
+
+        .error-entry {
+            padding: 10px 14px;
+            margin-bottom: 8px;
+            background: rgba(239, 68, 68, 0.1);
+            border-left: 3px solid var(--accent-red);
+            border-radius: 8px;
+        }
+
+        .error-time {
+            color: var(--accent-red);
+            font-size: 10px;
+            font-weight: 600;
+        }
+
+        .error-message {
+            color: var(--text);
+            margin-top: 4px;
+            font-size: 11px;
+        }
+
+        .no-errors {
+            color: var(--accent-green);
+            text-align: center;
+            padding: 40px 20px;
+            font-size: 13px;
+        }
+
+        .no-errors span {
+            display: block;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px;
+        }
+
+        @media (max-width: 1400px) {
+            .metrics-grid {
+                grid-template-columns: repeat(3, 1fr);
+            }
+
+            .charts-section,
+            .logs-section {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <header class="header">
+        <div class="logo-container">
+            <img src="/static/logo.webp" alt="Logo" onerror="this.parentElement.innerHTML='🎯'">
+        </div>
+        <div class="header-info">
+            <h1>Gimbal Tracking System</h1>
+            <p>Real-time Monitoring Dashboard • v2.0</p>
+        </div>
+        <div class="status-pill">
+            <span class="status-dot"></span>
+            <span>LIVE</span>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- Metrics -->
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-icon">📷</div>
+                <div class="metric-value cyan" id="fps">--</div>
+                <div class="metric-label">FPS</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-icon">⚡</div>
+                <div class="metric-value yellow" id="inference">--</div>
+                <div class="metric-label">Inference</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-icon">↔️</div>
+                <div class="metric-value blue" id="pan">--</div>
+                <div class="metric-label">Pan Angle</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-icon">↕️</div>
+                <div class="metric-value purple" id="tilt">--</div>
+                <div class="metric-label">Tilt Angle</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-icon">📶</div>
+                <div class="metric-value green" id="ble">--</div>
+                <div class="metric-label">BLE</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-icon">⚠️</div>
+                <div class="metric-value red" id="errors">0</div>
+                <div class="metric-label">Errors</div>
+            </div>
+        </div>
+
+        <!-- Charts: 3 columns -->
+        <div class="charts-section">
+            <!-- PAN Chart -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-header-icon blue">↔️</div>
+                    <span class="card-title">PAN - Góc & Dao động</span>
+                </div>
+                <div class="card-body">
+                    <div class="chart-wrapper">
+                        <canvas id="panChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TILT Chart -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-header-icon purple">↕️</div>
+                    <span class="card-title">TILT - Góc & Dao động</span>
+                </div>
+                <div class="card-body">
+                    <div class="chart-wrapper">
+                        <canvas id="tiltChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- FPS Chart -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-header-icon cyan">📷</div>
+                    <span class="card-title">FPS - Tốc độ khung hình</span>
+                </div>
+                <div class="card-body">
+                    <div class="chart-wrapper">
+                        <canvas id="fpsChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Logs: 3 columns -->
+        <div class="logs-section">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-header-icon blue">📤</div>
+                    <span class="card-title">App → ESP32</span>
+                </div>
+                <div class="card-body">
+                    <div class="log-panel" id="tx-log">
+                        <div style="text-align:center; color: var(--text-muted); padding: 40px;">Waiting for data...
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-header-icon green">📥</div>
+                    <span class="card-title">ESP32 → App</span>
+                </div>
+                <div class="card-body">
+                    <div class="log-panel" id="rx-log">
+                        <div style="text-align:center; color: var(--text-muted); padding: 40px;">Waiting for data...
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-header-icon red">🔴</div>
+                    <span class="card-title">Error Log</span>
+                </div>
+                <div class="card-body">
+                    <div class="log-panel" id="error-log">
+                        <div class="no-errors">
+                            <span>✓</span>
+                            No errors
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const chartOptions = {
+            animation: false,
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { intersect: false, mode: 'index' },
+            plugins: {
+                legend: { labels: { color: '#a0a0b0', font: { family: 'Inter', size: 10 }, boxWidth: 12 } }
+            },
+            scales: {
+                x: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#a0a0b0', maxTicksLimit: 6, font: { size: 9 } } },
+                y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#a0a0b0', font: { size: 9 } } }
+            }
+        };
+
+        // PAN Chart (Góc + Dao động)
+        const panChart = new Chart(document.getElementById('panChart'), {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    { label: 'Pan (°)', data: [], borderColor: '#6366f1', backgroundColor: 'rgba(99,102,241,0.1)', borderWidth: 2, tension: 0.3, pointRadius: 0, fill: true, yAxisID: 'y' },
+                    { label: 'Δ Dao động', data: [], borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0.1)', borderWidth: 2, tension: 0.3, pointRadius: 0, fill: true, yAxisID: 'y1' }
+                ]
+            },
+            options: {
+                ...chartOptions,
+                scales: {
+                    x: chartOptions.scales.x,
+                    y: { type: 'linear', position: 'left', min: -45, max: 45, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#6366f1', font: { size: 9 } }, title: { display: true, text: 'Góc (°)', color: '#6366f1', font: { size: 10 } } },
+                    y1: { type: 'linear', position: 'right', min: 0, max: 15, grid: { drawOnChartArea: false }, ticks: { color: '#f59e0b', font: { size: 9 } }, title: { display: true, text: 'Δ', color: '#f59e0b', font: { size: 10 } } }
+                }
+            }
+        });
+
+        // TILT Chart (Góc + Dao động)
+        const tiltChart = new Chart(document.getElementById('tiltChart'), {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    { label: 'Tilt (°)', data: [], borderColor: '#8b5cf6', backgroundColor: 'rgba(139,92,246,0.1)', borderWidth: 2, tension: 0.3, pointRadius: 0, fill: true, yAxisID: 'y' },
+                    { label: 'Δ Dao động', data: [], borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', borderWidth: 2, tension: 0.3, pointRadius: 0, fill: true, yAxisID: 'y1' }
+                ]
+            },
+            options: {
+                ...chartOptions,
+                scales: {
+                    x: chartOptions.scales.x,
+                    y: { type: 'linear', position: 'left', min: -45, max: 45, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8b5cf6', font: { size: 9 } }, title: { display: true, text: 'Góc (°)', color: '#8b5cf6', font: { size: 10 } } },
+                    y1: { type: 'linear', position: 'right', min: 0, max: 15, grid: { drawOnChartArea: false }, ticks: { color: '#10b981', font: { size: 9 } }, title: { display: true, text: 'Δ', color: '#10b981', font: { size: 10 } } }
+                }
+            }
+        });
+
+        // FPS Chart
+        const fpsChart = new Chart(document.getElementById('fpsChart'), {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    { label: 'FPS', data: [], borderColor: '#06b6d4', backgroundColor: 'rgba(6,182,212,0.15)', borderWidth: 2, tension: 0.3, pointRadius: 0, fill: true }
+                ]
+            },
+            options: {
+                ...chartOptions,
+                scales: {
+                    x: chartOptions.scales.x,
+                    y: { min: 0, max: 60, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#06b6d4', font: { size: 9 } }, title: { display: true, text: 'FPS', color: '#06b6d4', font: { size: 10 } } }
+                }
+            }
+        });
+
+        let prevPan = 0, prevTilt = 0, txLogs = [], rxLogs = [];
+
+        function addTxLog(data) {
+            const now = new Date().toLocaleTimeString();
+            txLogs.unshift({ time: now, data: data });
+            if (txLogs.length > 30) txLogs.pop();
+            document.getElementById('tx-log').innerHTML = txLogs.map(l =>
+                '<div class="log-entry"><span class="log-time">' + l.time + '</span><span class="log-badge tx">TX</span><span class="log-message">' + l.data + '</span></div>'
+            ).join('');
+        }
+
+        function addRxLog(data) {
+            const now = new Date().toLocaleTimeString();
+            rxLogs.unshift({ time: now, data: data });
+            if (rxLogs.length > 30) rxLogs.pop();
+            document.getElementById('rx-log').innerHTML = rxLogs.map(l =>
+                '<div class="log-entry"><span class="log-time">' + l.time + '</span><span class="log-badge rx">RX</span><span class="log-message">' + l.data + '</span></div>'
+            ).join('');
+        }
+
+        function updateMetrics() {
+            fetch('/api/latest').then(r => r.json()).then(data => {
+                if (!data || Object.keys(data).length === 0) return;
+
+                const fps = data.fps || 0;
+                const pan = data.panAngle || 0;
+                const tilt = data.tiltAngle || 0;
+
+                document.getElementById('fps').innerText = fps ? fps.toFixed(1) : '--';
+                document.getElementById('inference').innerText = data.inferenceTime ? data.inferenceTime + 'ms' : '--';
+                document.getElementById('pan').innerText = pan ? pan.toFixed(1) + '°' : '--';
+                document.getElementById('tilt').innerText = tilt ? tilt.toFixed(1) + '°' : '--';
+
+                const bleEl = document.getElementById('ble');
+                bleEl.innerText = data.bleConnected ? 'OK' : 'OFF';
+                bleEl.className = 'metric-value ' + (data.bleConnected ? 'green' : 'red');
+
+                document.getElementById('errors').innerText = data.errorCount || 0;
+
+                const now = new Date().toLocaleTimeString();
+
+                // PAN chart
+                panChart.data.labels.push(now);
+                panChart.data.datasets[0].data.push(pan);
+                panChart.data.datasets[1].data.push(Math.abs(pan - prevPan));
+
+                // TILT chart
+                tiltChart.data.labels.push(now);
+                tiltChart.data.datasets[0].data.push(tilt);
+                tiltChart.data.datasets[1].data.push(Math.abs(tilt - prevTilt));
+
+                // FPS chart
+                fpsChart.data.labels.push(now);
+                fpsChart.data.datasets[0].data.push(fps);
+
+                prevPan = pan; prevTilt = tilt;
+
+                // Limit data points
+                const MAX_POINTS = 60;
+                [panChart, tiltChart, fpsChart].forEach(chart => {
+                    if (chart.data.labels.length > MAX_POINTS) {
+                        chart.data.labels.shift();
+                        chart.data.datasets.forEach(d => d.data.shift());
+                    }
+                    chart.update();
+                });
+
+                if (pan !== 0 || tilt !== 0) {
+                    addTxLog('{ {[ax]:' + pan.toFixed(0) + ';[ay]:' + tilt.toFixed(0) + '} }');
+                }
+            });
+
+            fetch('/api/errors').then(r => r.json()).then(errors => {
+                const container = document.getElementById('error-log');
+                if (errors.length === 0) {
+                    container.innerHTML = '<div class="no-errors"><span>✓</span>No errors</div>';
+                } else {
+                    container.innerHTML = errors.map(e =>
+                        '<div class="error-entry"><div class="error-time">' + new Date(e.timestamp).toLocaleTimeString() + '</div><div class="error-message">' + e.message + '</div></div>'
+                    ).join('');
+                }
+            });
+        }
+
+        setInterval(updateMetrics, 200);
+        updateMetrics();
+    </script>
+</body>
+
+</html>
