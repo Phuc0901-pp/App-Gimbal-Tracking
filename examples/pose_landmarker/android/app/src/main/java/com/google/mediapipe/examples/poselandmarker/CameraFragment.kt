@@ -274,7 +274,7 @@ class CameraFragment : Fragment(), YoloHelper.DetectorListener {
     
     private fun showTargetSelectionDialog() {
         // Chỉ cho chọn chế độ: Track FACE hoặc Track BODY (Person)
-        val options = listOf("👤 Start Tracking FACE", "🧍 Start Tracking BODY (Person)")
+        val options = listOf("Start Tracking FACE", "Start Tracking BODY (Person)")
         
         val dialog = BottomSheetDialog(requireContext())
         val rv = androidx.recyclerview.widget.RecyclerView(requireContext())
@@ -376,7 +376,7 @@ class CameraFragment : Fragment(), YoloHelper.DetectorListener {
                 when(recordEvent) {
                     is VideoRecordEvent.Start -> {
                         binding.btnRecordVideo.setImageResource(android.R.drawable.ic_media_pause)
-                        binding.tvHudLine1.text = "🔴 RECORDING..."
+                        binding.tvHudLine1.text = "RECORDING..."
                         binding.tvHudLine1.setTextColor(Color.RED)
                     }
                     is VideoRecordEvent.Finalize -> {
@@ -620,7 +620,7 @@ class CameraFragment : Fragment(), YoloHelper.DetectorListener {
             if (enabled && laptopIP.isNotEmpty()) {
                 metricsPusher = MetricsPusher(laptopIP)
                 startMetricsPushing()
-                Toast.makeText(context, "📊 $laptopIP:5000", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, " $laptopIP:5000", Toast.LENGTH_SHORT).show()
             } else {
                 metricsPusher = null
                 Toast.makeText(context, "Monitoring off", Toast.LENGTH_SHORT).show()

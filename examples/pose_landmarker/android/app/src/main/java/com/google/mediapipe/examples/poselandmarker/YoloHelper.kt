@@ -52,35 +52,16 @@ class YoloHelper(val context: Context, val listener: DetectorListener) {
             val options = Interpreter.Options()
             val compatList = CompatibilityList()
 
-            // 1. Ưu tiên thử GPU trước
-            if (compatList.isDelegateSupportedOnThisDevice) {
-                Log.d("YoloHelper", "✅ GPU Supported. Loading...")
-                val delegateOptions = GpuDelegate.Options().apply {
-                    setInferencePreference(GpuDelegate.Options.INFERENCE_PREFERENCE_SUSTAINED_SPEED)
-                    setPrecisionLossAllowed(true)
-                }
-                gpuDelegate = GpuDelegate(delegateOptions)
-                options.addDelegate(gpuDelegate)
-            }
-            // 2. Nếu không có GPU, thử dùng NNAPI (Tăng tốc phần cứng Android)
-            else if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
-                Log.d("YoloHelper", "⚠️ GPU Not Supported. Trying NNAPI...")
-                try {
-                    nnApiDelegate = NnApiDelegate()
-                    options.addDelegate(nnApiDelegate)
-                    Log.d("YoloHelper", "✅ NNAPI Delegate Loaded!")
-                } catch (e: Exception) {
-                    Log.e("YoloHelper", "NNAPI Failed, falling back to CPU", e)
-                    options.setUseXNNPACK(true)
-                    options.setNumThreads(Runtime.getRuntime().availableProcessors())
-                }
-            }
-            // 3. Đường cùng: Dùng CPU thuần (XNNPACK)
-            else {
-                Log.w("YoloHelper", "⚠️ Hardware accel failed. Using CPU XNNPACK.")
-                options.setUseXNNPACK(true)
-                options.setNumThreads(Runtime.getRuntime().availableProcessors()) // [TỐI ƯU] Số luồng linh hoạt
-            }
+            // 1. [DISABLED] GPU (Int8 unfriendly)
+            // if (compatList.isDelegateSupportedOnThisDevice) { ... }
+
+            // 2. [DISABLED] NNAPI (Causes lag on some devices)
+            // if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) { ... }
+
+            // 3. FORCE CPU XNNPACK (Best Stability & FPS for Int8)
+            Log.w("YoloHelper", "🚀 FORCE CPU MODE: Using XNNPACK with 4 Threads")
+            options.setUseXNNPACK(true)
+            options.setNumThreads(4)
 
             val modelFile = FileUtil.loadMappedFile(context, MODEL_PATH)
             interpreter = Interpreter(modelFile, options)

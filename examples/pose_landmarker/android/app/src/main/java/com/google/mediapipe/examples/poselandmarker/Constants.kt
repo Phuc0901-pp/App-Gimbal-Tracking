@@ -47,7 +47,8 @@ object Constants {
         const val ANALYSIS_HEIGHT = 240
         
         /** Frame skip ratio (process 1 out of every N frames) */
-        const val FRAME_SKIP_RATIO = 1
+        /** Frame skip ratio (process 1 out of every N frames) */
+        const val FRAME_SKIP_RATIO = 2 // [REVERT] Trả về 2 để giảm tải. 1 frame detect, 1 frame predict.
         
         /** Horizontal Field of View in degrees (typical for smartphone cameras) */
         const val HORIZONTAL_FOV = 60.0f
