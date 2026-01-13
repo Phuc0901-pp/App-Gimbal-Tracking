@@ -1,304 +1,244 @@
-# 🎯 ESP32 Gimbal - Bluetooth Remote Capture Test
+# ESP32 Gimbal - 3-Axis Tracking System
+----------------------------------------------------------------------------------------------------
+Hệ thống gimbal 3 trục sử dụng ESP32 để tracking đối tượng thông qua Android App với Bluetooth BLE.
 
-Test chức năng điều khiển từ xa: **Nhấn nút GPIO16 → ESP32 gửi "CAPTURE" qua Bluetooth → App chụp ảnh**
+## Tổng Quan
+
+### Chức năng chính
+- **MANUAL Mode**: Điều khiển bằng joystick qua Bluetooth
+- **STABLE Mode**: Tự cân bằng dựa trên IMU (BNO055/MPU6050)
+- **TRACKING Mode**: Visual servoing - theo dõi đối tượng từ Android App
+
+### Hardware
+| Thành phần | Mô tả |
+|------------|-------|
+| MCU | ESP32 Dev Module |
+| Motor 1 (Yaw) | GM5602 - 7 pole pairs |
+| Motor 2 (Pitch) | GM3502 - 11 pole pairs |
+| Motor 3 (Roll) | GM3502 - 11 pole pairs |
+| IMU | Adafruit BNO055 / MPU6050 |
+| Nguồn | 12V DC |
+
+### Software Stack
+- **Framework**: Arduino + PlatformIO
+- **Motor Control**: SimpleFOC Library
+- **Communication**: Bluetooth Low Energy (BLE)
+- **Control Algorithm**: PID Controller
+
+## Sơ Đồ Kết Nối
+
+### Motor Pin Assignments
+
+```
+Motor 1 (Yaw - GM5602):     Motor 2 (Pitch - GM3502):    Motor 3 (Roll - GM3502):
+  UH: GPIO 2                  UH: GPIO 12                  UH: GPIO 25
+  VH: GPIO 4                  VH: GPIO 14                  VH: GPIO 33
+  WH: GPIO 5                  WH: GPIO 27                  WH: GPIO 32
+  EN: GPIO 15                 EN: GPIO 13                  EN: GPIO 26
+```
+
+### Button & Sensors
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        ESP32 Dev Board                      │
+│                                                             │
+│  GPIO16 (Capture Button) ●────[Button]─── GND               │
+│  GPIO21/22 (I2C) ●─────────── IMU Sensor                    │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Thông Số PID
+
+### Giá trị hiện tại (TRACKING Mode)
+
+```cpp
+// YAW (Motor1 - Pan Left/Right)
+PIDParams pidParamYaw = { 
+    Kp: 4.0,    // Proportional gain
+    Ki: 0.0,    // Integral gain  
+    Kd: 0.05    // Derivative gain
+};
+
+// PITCH (Motor2 - Tilt Up/Down)
+PIDParams pidParamPitch = { 
+    Kp: 10.0,   // Proportional gain
+    Ki: 0.0,    // Integral gain
+    Kd: 0.01    // Derivative gain
+};
+
+// ROLL (Motor3 - không dùng trong tracking)
+PIDParams pidParamRoll = { 
+    Kp: 15.0,
+    Ki: 0.0,
+    Kd: 0.01
+};
+```
+
+### Hướng dẫn Tune PID
+
+| Tình huống | Giải pháp |
+|------------|-----------|
+| Tracking **chậm** | Tăng Kp (4.0 → 6.0) |
+| Tracking **rung/dao động** | Tăng Kd hoặc giảm Kp |
+| Có sai số tĩnh | Bật Ki (0.0 → 0.1) |
+
+> Xem thêm: `docs/esp32_conservative_pid_guide.md` để có hướng dẫn chi tiết
+
+## Bluetooth Protocol
+
+### Service & Characteristics
+
+| Tham số | UUID |
+|---------|------|
+| Service | `6e400001-b5a3-f393-e0a9-e50e24dcca9e` |
+| TX (ESP32 → App) | `6e400003-b5a3-f393-e0a9-e50e24dcca9e` |
+| RX (App → ESP32) | `6e400002-b5a3-f393-e0a9-e50e24dcca9e` |
+
+### Data Format (App → ESP32)
+
+```
+{{[x]:offset_x;[y]:offset_y;[pan]:target_pan;[tilt]:target_tilt}}
+```
+
+| Field | Mô tả | Đơn vị |
+|-------|-------|--------|
+| `x` | Offset X từ center | pixels |
+| `y` | Offset Y từ center | pixels |
+| `pan` | Target pan angle | độ |
+| `tilt` | Target tilt angle | độ |
+
+### Commands
+
+| Command | Mô tả |
+|---------|-------|
+| `CAPTURE` | Chụp ảnh từ xa |
+| `M:0` | MANUAL mode |
+| `M:1` | STABLE mode |
+| `M:2` | TRACKING mode |
+
+
+### Sử dụng VS Code
+- **Build**: `Ctrl+Alt+B`
+- **Upload**: `Ctrl+Alt+U`
+- **Serial Monitor**: `Ctrl+Alt+S`
+
+## Troubleshooting
+
+### ESP32 không upload được
+1. Giữ nút **BOOT** trên ESP32
+2. Nhấn nút **EN** (reset)
+3. Thả **EN**, giữ **BOOT** thêm 2 giây
+4. Thả **BOOT** → Upload
+
+### Bluetooth không kết nối
+- Kiểm tra Serial Monitor có `BLE Service started`
+- Reset ESP32 (nhấn nút EN)
+- Xóa cache Bluetooth trên điện thoại
+
+### Gimbal rung/oscillation
+- Giảm `Kp` hoặc tăng `Kd`
+- Kiểm tra power supply ổn định 12V
+- Kiểm tra kết nối motor
+
+### Tracking không chính xác
+- Calibrate IMU sensor
+- Kiểm tra polo pairs của motor
+- Tune lại PID parameters
 
 ---
 
-## 📋 Tổng Quan
-
-Project này test kết nối Bluetooth BLE giữa ESP32 và Android App với các chức năng:
-
-- ✅ **Bluetooth BLE** - Kết nối không dây với app
-- ✅ **Button Input** - Đọc trạng thái nút nhấn GPIO16
-- ✅ **Remote Capture** - Gửi lệnh chụp ảnh từ xa
-- ✅ **Debounce** - Chống nhiễu nút nhấn (200ms)
-
----
-
-## 🚀 Bắt Đầu Nhanh
-
-### 1️⃣ Build Code
-```bash
-# Build project
-C:\Users\USER\.platformio\penv\Scripts\platformio.exe run
-```
-**Kết quả:** `[SUCCESS] Took 80.45 seconds` ✅
-
-### 2️⃣ Upload Lên ESP32
-```bash
-# Upload code
-C:\Users\USER\.platformio\penv\Scripts\platformio.exe run --target upload
-```
-
-### 3️⃣ Mở Serial Monitor
-```bash
-# Monitor serial output
-C:\Users\USER\.platformio\penv\Scripts\platformio.exe device monitor
-```
-
-### 4️⃣ Kết Nối Phần Cứng
-```
-ESP32 GPIO16 ────[Button]──── GND
-```
-
-### 5️⃣ Kết Nối Bluetooth
-1. Mở Android App
-2. Settings → Bluetooth
-3. Tìm "ESP32_Gimbal_Test"
-4. Connect
-
-### 6️⃣ Test!
-- Nhấn nút GPIO16
-- App tự động chụp ảnh
-- Toast hiển thị "Remote Capture!"
-
----
-
-## 📚 Tài Liệu Hướng Dẫn
-
-| File | Mô Tả |
-|------|-------|
-| **[QUICK_START.md](QUICK_START.md)** | Hướng dẫn upload và test nhanh |
-| **[UPLOAD_GUIDE.md](UPLOAD_GUIDE.md)** | Hướng dẫn upload chi tiết sau khi build |
-| **[TEST_INSTRUCTIONS.md](TEST_INSTRUCTIONS.md)** | Hướng dẫn test từng bước |
-| **[WIRING_DIAGRAM.md](WIRING_DIAGRAM.md)** | Sơ đồ kết nối phần cứng |
-| **[SUMMARY.md](SUMMARY.md)** | Tóm tắt toàn bộ project |
-
----
-
-## 🔧 Cấu Trúc Project
+## Cấu Trúc Project
 
 ```
 ESP32_Gimbal/
 ├── src/
-│   ├── test_bluetooth_button.cpp  ← Code test chính (GPIO16)
-│   └── esp32_capture_button.cpp   ← Code tham khảo (GPIO19)
-├── platformio.ini                 ← Cấu hình PlatformIO
-├── README.md                      ← File này
-├── QUICK_START.md                 ← Hướng dẫn nhanh
-├── UPLOAD_GUIDE.md                ← Hướng dẫn upload
-├── TEST_INSTRUCTIONS.md           ← Hướng dẫn test chi tiết
-├── WIRING_DIAGRAM.md              ← Sơ đồ kết nối
-└── SUMMARY.md                     ← Tóm tắt
+│   ├── main.cpp              # Code chính (gimbal control)
+│   └── Bluetooth.cpp         # BLE implementation
+├── include/
+│   ├── Bluetooth.h           # BLE class header
+│   ├── BleProtocol.h         # Protocol utilities
+│   └── PID_Controller.h      # PID controller class
+├── lib/
+│   └── SimpleFOC/            # Motor control library
+├── docs/
+│   ├── esp32_conservative_pid_guide.md
+│   ├── esp32_hardware_tuning_guide.md
+│   ├── esp32_gimbal_tuning_guide.md
+│   ├── esp32_gimbal_pid_tuning.m      # MATLAB simulation
+│   └── esp32_gimbal_auto_optimization.m
+├── matlab_simulation/
+│   └── visual_servoing_simulation.m
+├── platformio.ini            # PlatformIO configuration
+└── README.md                 # File này
 ```
 
 ---
 
-## ⚙️ Thông Số Kỹ Thuật
+## Control Modes Chi Tiết
 
-### ESP32
-| Thông Số | Giá Trị |
-|----------|---------|
-| Board | ESP32 Dev Module |
-| GPIO Pin | 16 (Capture Button) |
-| Debounce | 200ms |
-| Baud Rate | 115200 |
-| Upload Speed | 921600 |
+### Mode 0: MANUAL
+- Điều khiển joystick từ app
+- Tốc độ quay tỉ lệ với input
+- Không dùng IMU
 
-### Bluetooth BLE
-| Thông Số | Giá Trị |
-|----------|---------|
-| Device Name | ESP32_Gimbal_Test |
-| Service UUID | 4fafc201-1fb5-459e-8fcc-c5c9c331914b |
-| Characteristic UUID | beb5483e-36e1-4688-b7f5-ea07361b26a8 |
-| MTU Size | 512 bytes |
+### Mode 1: STABLE
+- Tự cân bằng dựa trên IMU
+- Giữ góc horizon cố định
+- Dùng để chống rung
 
-### Android App
-| Thông Số | Giá Trị |
-|----------|---------|
-| Capture Command | "CAPTURE" |
-| Min Capture Interval | 2000ms (2 giây) |
-| Photo Directory | Pictures/PoseLandmarker/ |
+### Mode 2: TRACKING
+- Visual servoing từ Android app
+- App gửi target angle qua BLE
+- Gimbal theo dõi đối tượng realtime
+- PID controller điều khiển smooth movement
 
 ---
 
-## 🔌 Kết Nối Phần Cứng
+## Thông Số Kỹ Thuật
 
-### Sơ Đồ
-```
-┌─────────────────┐
-│     ESP32       │
-│                 │
-│  GPIO16 ●───┐   │
-│             │   │
-│   GND   ●───┼───┤
-│             │   │
-└─────────────┼───┘
-              │
-         ┌────┴────┐
-         │  Button │
-         └─────────┘
-```
-
-### Linh Kiện Cần Thiết
-- [x] ESP32 Dev Board
-- [x] Tactile Button (6x6mm hoặc 12x12mm)
-- [x] 2x Jumper Wires
-- [x] USB Cable
-
-### Nguyên Lý Hoạt Động
-- **Không nhấn:** GPIO16 = HIGH (pull-up)
-- **Nhấn nút:** GPIO16 = LOW → Trigger!
+| Parameter | Value |
+|-----------|-------|
+| Supply Voltage | 12V DC |
+| Motor Voltage Limit | 7.0V |
+| Tracking Update Rate | 50 Hz (20ms) |
+| BLE Baud Rate | 115200 |
+| Velocity Limit (Yaw) | 1000 deg/s |
+| Velocity Limit (Pitch) | 1200 deg/s |
+| Deadzone | 2.0° |
 
 ---
 
-## 📱 Tích Hợp Android App
+## Changelog
 
-### Constants.kt
-```kotlin
-object Bluetooth {
-    const val REMOTE_CAPTURE_COMMAND = "CAPTURE"
-    const val MIN_CAPTURE_INTERVAL_MS = 2000L
-}
-```
+### v1.1 (2025-12-26)
+- Bluetooth BLE integration
+- Remote capture button (GPIO16)
+- Visual servoing tracking
+- 3 control modes (MANUAL/STABLE/TRACKING)
 
-### CameraFragment.kt
-```kotlin
-override fun onDataReceived(data: String) {
-    if (data.contains(Constants.Bluetooth.REMOTE_CAPTURE_COMMAND) && 
-        System.currentTimeMillis() - lastCaptureTime > Constants.Bluetooth.MIN_CAPTURE_INTERVAL_MS) {
-        lastCaptureTime = System.currentTimeMillis()
-        activity?.runOnUiThread {
-            takePhoto()
-            Toast.makeText(context, "Remote Capture!", Toast.LENGTH_SHORT).show()
-        }
-    }
-}
-```
+### v1.0 (Initial)
+- SimpleFOC motor control
+- IMU integration (BNO055/MPU6050)
+- Basic PID control
 
 ---
 
-## ✅ Kết Quả Mong Đợi
-
-### Serial Monitor (ESP32)
-```
-========================================
-ESP32 BLUETOOTH + BUTTON TEST
-========================================
-✓ Button GPIO16 initialized (Pull-up)
-
-Initializing BLE...
-✓ BLE Service started
-✓ Advertising as: ESP32_Gimbal_Test
-
-========================================
-READY!
-1. Connect from Android app
-2. Press button on GPIO16 to send CAPTURE
-========================================
-
-✓ BLE Client Connected!
-
->>> BUTTON PRESSED!
->>> Sent: CAPTURE
-```
-
-### Android App
-- ✅ Tự động chụp ảnh
-- ✅ Toast: "Remote Capture!"
-- ✅ Ảnh lưu tại: `Pictures/PoseLandmarker/PoseLandmarker_YYYYMMDD_HHMMSS.jpg`
-- ✅ Hiệu ứng flash trắng
-
----
-
-## 🐛 Xử Lý Lỗi
-
-### ESP32 không hiển thị trong Bluetooth
-- **Nguyên nhân:** BLE chưa khởi động
-- **Giải pháp:** Reset ESP32, kiểm tra Serial Monitor
-
-### Nhấn nút không có phản ứng
-- **Nguyên nhân:** Kết nối sai hoặc Bluetooth chưa kết nối
-- **Giải pháp:** Kiểm tra GPIO16 ↔ GND, kiểm tra BLE connected
-
-### App không chụp ảnh
-- **Nguyên nhân:** Không có quyền Camera/Storage
-- **Giải pháp:** Cấp quyền trong Settings → Apps
-
----
-
-## 🔄 Sau Khi Test
-
-### Nếu Thành Công ✅
-1. **Tích hợp vào code chính:**
-   - Copy logic button từ `test_bluetooth_button.cpp`
-   - Paste vào file gimbal chính
-   - Chỉnh sửa `platformio.ini` để build file chính
-
-2. **Tùy chỉnh:**
-   - Thay đổi GPIO nếu cần
-   - Điều chỉnh debounce time
-   - Thêm các lệnh khác (RECORD, STOP, etc.)
-
-### Nếu Thất Bại ❌
-1. Kiểm tra Serial Monitor
-2. Kiểm tra kết nối phần cứng bằng multimeter
-3. Xem Android Logcat để tìm lỗi
-4. Đọc [TEST_INSTRUCTIONS.md](TEST_INSTRUCTIONS.md)
-
----
-
-## 📊 Build Status
-
-| Platform | Status |
-|----------|--------|
-| ESP32 | ✅ Build Success (80.45s) |
-| Android | ✅ Ready |
-
----
-
-## 🎓 Học Thêm
-
-### ESP32 BLE
-- [ESP32 BLE Documentation](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/bluetooth/esp_gap_ble.html)
-- [Arduino BLE Library](https://github.com/espressif/arduino-esp32/tree/master/libraries/BLE)
-
-### PlatformIO
-- [PlatformIO Documentation](https://docs.platformio.org/)
-- [ESP32 Platform](https://docs.platformio.org/en/latest/platforms/espressif32.html)
-
----
-
-## 📞 Hỗ Trợ
-
-Nếu gặp vấn đề:
-1. Kiểm tra Serial Monitor của ESP32
-2. Kiểm tra Logcat của Android App
-3. Đọc các file hướng dẫn trong project
-4. Test từng phần riêng biệt
-
----
-
-## 📝 Changelog
-
-### Version 1.0 (2025-12-26)
-- ✅ Chuyển từ GPIO19 sang GPIO16
-- ✅ Build thành công với PlatformIO
-- ✅ Tạo đầy đủ tài liệu hướng dẫn
-- ✅ Test sẵn sàng
-
----
-
-## 📄 License
+## License
 
 MIT License - Free to use and modify
 
 ---
 
-## 👨‍💻 Author
+## Author
 
-Pham Phuc - Gimbal Tracking Project
-
----
-
-**Sẵn sàng test! Chúc bạn thành công! 🎉🚀**
+**TEAM DATN** - Gimbal Tracking Project
 
 ---
 
-## 🔗 Quick Links
+## Tài Liệu Tham Khảo
 
-- [Bắt Đầu Nhanh](QUICK_START.md)
-- [Hướng Dẫn Upload](UPLOAD_GUIDE.md)
-- [Hướng Dẫn Test](TEST_INSTRUCTIONS.md)
-- [Sơ Đồ Kết Nối](WIRING_DIAGRAM.md)
-- [Tóm Tắt](SUMMARY.md)
+- [SimpleFOC Documentation](https://docs.simplefoc.com/)
+- [ESP32 BLE Documentation](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/bluetooth/)
+- [PlatformIO ESP32](https://docs.platformio.org/en/latest/platforms/espressif32.html)
