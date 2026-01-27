@@ -1,0 +1,44 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+
+    <!-- Khung camera: viền rỗng -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="
+            M20,5h-3.2L15,3H9L7.2,5H4c-1.1,0 -2,0.9 -2,2v10c0,1.1 0.9,2 2,2h16c1.1,0 2,-0.9 2,-2V7c0,-1.1 -0.9,-2 -2,-2z
+            M20,17H4V7h4.2l1.8,-2h4l1.8,2H20V17z" />
+
+    <!-- Dấu hoán đổi: nâng lên và đồng tâm, mũi ở đỉnh hai cung -->
+    <group
+        android:pivotX="12" android:pivotY="12"
+        android:scaleX="0.82" android:scaleY="0.82"
+        android:translateY="-0.2">
+
+        <!-- Hai cung tròn (bán kính nhỏ hơn để không chạm viền dưới) -->
+        <path
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="1.5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:fillColor="#00000000"
+            android:pathData="M9,7.5 A5,5 0 0 1 16.8,11"/>
+        <path
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="1.5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:fillColor="#00000000"
+            android:pathData="M14.5,15.6 A5,5 0 0 1 7.2,12.5"/>
+
+        <!-- Mũi tên đặt đúng đỉnh cung: phải (hướng xuống) & trái (hướng lên) -->
+        <group android:translateX="7.5" android:translateY="10" android:rotation="120">
+            <!-- chiều dài ~4.0, đáy ~ strokeWidth 2.4 -->
+            <path android:fillColor="#FFFFFFFF" android:pathData="M0,0 -3.0,-1.6 -3.0,1.6 Z"/>
+        </group>
+        <group android:translateX="16" android:translateY="13" android:rotation="-60">
+            <path android:fillColor="#FFFFFFFF" android:pathData="M0,0 -3.0,-1.6 -3.0,1.6 Z"/>
+        </group>
+    </group>
+</vector>

@@ -1,0 +1,32 @@
+# Large Archives and Backups
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
+*.tar.gz
+*.bak
+*.old
+
+# Databases and large data
+*.db
+*.sqlite
+*.sqlite3
+monitoring_data/
+mediapipe-samples.rar
+
+# Media
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Build and Dependencies
+/build
+/dist
+/node_modules
+/.idea
+/.vscode
+.DS_Store
+*.apk
+*.aab
